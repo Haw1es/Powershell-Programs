@@ -1,0 +1,111 @@
+#This minimizes the console
+Add-Type -Name Window -Namespace Console -MemberDefinition '
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+'
+$consolePtr = [Console.Window]::GetConsoleWindow()
+[Console.Window]::ShowWindow($consolePtr, 6)
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName Microsoft.Office.Interop.Outlook
+
+# Loads Outlook Application
+$outlook = New-Object -ComObject Outlook.Application
+
+# File Paths for Templates
+##Enter File paths for templates Below###
+$templatePaths = @{
+    "Template Name" = "C:\Users\Username\Documents\YourFolder\\Template name.oft"
+   
+}
+
+# File Paths for Attachments
+$attachmentPaths = @{
+    "Attachement" = "C:\Users\Username\Documents\YourFolder\Attachment.xlsx"
+    
+}
+
+ # Function to open Outlook template with optional attachment
+function Open-OutlookTemplate {
+    param (
+        [string]$templatePath,
+        [string]$attachmentPath = $null
+    )
+    try {
+        $mailItem = $outlook.CreateItemFromTemplate($templatePath)
+        $mailItem.Display()
+        if ($attachmentPath -and (Test-Path $attachmentPath)) {
+            $fileInfo = Get-Item $attachmentPath
+            if ($fileInfo.LastWriteTime.Date -eq (Get-Date).Date) {
+                $mailItem.Attachments.Add($attachmentPath) | Out-Null
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Attachment not added. File not updated today.", "Attachment Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error opening template or attaching file: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+} 
+# Function to open UAT or No UAT template based on file date
+function Open-UATorNoUAT {
+    try {
+        $fileInfo = Get-Item $trackerFilePath
+
+        if ($fileInfo.LastWriteTime.Date -eq (Get-Date).Date) {
+            # File updated today, open UAT.oft and attach
+            $mailItem = $outlook.CreateItemFromTemplate($templatePathUAT)
+            $mailItem.Display()
+            $mailItem.Attachments.Add($trackerFilePath) | Out-Null
+        } else {
+            # File not updated today, open no new UAT files.oft
+            $mailItem = $outlook.CreateItemFromTemplate($templatePathNoUAT)
+            $mailItem.Display()
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
+
+# Function to handle Open Items template logic
+function Open-OpenItemsTemplate {
+    try {
+        if ((Test-Path $openItemsFilePath) -and ((Get-Item $openItemsFilePath).LastWriteTime.Date -eq (Get-Date).Date)) {
+            # File updated today -> Use Open Items template and attach file
+            Open-OutlookTemplate -templatePath $templatePathOpenItems -attachmentPath $openItemsFilePath
+        } else {
+            # Open without attachment if file not updated today
+            Open-OutlookTemplate -templatePath $templatePathOpenItems
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
+
+
+
+# GUI
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Email Generator"
+$form.Size = New-Object System.Drawing.Size(300, 450)
+$form.StartPosition = "CenterScreen"
+
+# Buttons
+$buttonUAT = New-Object System.Windows.Forms.Button
+$buttonUAT.Location = New-Object System.Drawing.Point(10, 10)
+$buttonUAT.Size = New-Object System.Drawing.Size(260, 30)
+$buttonUAT.Text = "Template"
+$buttonUAT.Add_Click({ Open-UATorNoUAT })
+
+$buttonExit = New-Object System.Windows.Forms.Button
+$buttonExit.Location = New-Object System.Drawing.Point(10, 370)
+$buttonExit.Size = New-Object System.Drawing.Size(260, 30)
+$buttonExit.Text = "Exit"
+$buttonExit.Add_Click({ $form.Close() })
+
+# Add controls
+$form.Controls.Add($buttonUAT)
+$form.Controls.Add($buttonExit)
+
+# Show form
+$form.ShowDialog()
