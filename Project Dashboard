@@ -1,0 +1,324 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Minimize command window
+Add-Type -Name Window -Namespace Console -MemberDefinition '
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+'
+$consolePtr = [Console.Window]::GetConsoleWindow()
+[Console.Window]::ShowWindow($consolePtr, 6) # 6 = Minimize
+
+# Outlook Application
+$outlook = New-Object -ComObject Outlook.Application
+
+#Create GUI
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Command Center"
+$form.Size = New-Object System.Drawing.Size(800, 620)
+$form.StartPosition = "CenterScreen"
+
+# Folder Paths
+$liveprog = "C:\Users\Username\Documents\YourFolder"
+$testprog = "C:\Users\Username\Documents\YourFolder"
+$logPath = "C:\Users\Username\Documents\YourFolder"
+$templatePathUAT = "C:\Users\Username\Documents\YourFolder\Template.oft" 
+$templatePathNoUAT = "C:\Users\Username\Documents\YourFolder\No new Template.oft" 
+$templatePathOpenItems = "C:\Users\Username\Documents\YourFolder\Issues.oft" 
+$templatePathLOE = "C:\Users\Username\Documents\YourFolder\Time.oft" 
+$trackerFilePath = "C:\Users\Username\Documents\YourFolder\Tracker2025.xlsx" 
+$openItemsFilePath = "C:\Users\Username\Documents\YourFolder" 
+$ProjectTrackerPath = "C:\Users\Username\Documents\YourFolder\Tracker.csv"
+$FolderPathLOE = "C:\Users\Username\Documents\YourFolder\Weekly Sheets"
+$templatePathProjectUpdates = "C:\Users\Username\Documents\YourFolder\ProjectUpdates.oft" 
+
+#Folder Paths for Shortcuts
+Set-Variable -Name folderPaths -Value @{
+    "SFTP" = "C:\Users\Username\Documents\YourFolder"
+   	
+}-Scope Global
+
+# Function to open Outlook template with optional attachment
+function Open-OutlookTemplate {
+    param (
+        [string]$templatePath,
+        [string]$attachmentPath = $null
+    )
+
+    try {
+        $mailItem = $outlook.CreateItemFromTemplate($templatePath)
+        $mailItem.Display()
+
+        if ($attachmentPath -and (Test-Path $attachmentPath)) {
+            $fileInfo = Get-Item $attachmentPath
+            if ($fileInfo.LastWriteTime.Date -eq (Get-Date).Date) {
+                $mailItem.Attachments.Add($attachmentPath) | Out-Null
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Attachment not added. File not updated today.", "Attachment Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+        }
+
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error opening template or attaching file: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
+
+
+##LOE Template
+function Open-LOEEmail {
+    param (
+        [string]$templatePath,
+        [string]$attachmentFolderPath = $null # Changed from attachmentPath to attachmentFolderPath
+    )
+
+    try {
+        $outlook = New-Object -ComObject Outlook.Application
+        $mailItem = $outlook.CreateItemFromTemplate($templatePath)
+        $mailItem.Display()
+
+        if ($attachmentFolderPath -and (Test-Path $attachmentFolderPath -PathType Container)) {
+            # Get the most recently updated file in the specified folder
+            $latestFile = Get-ChildItem -Path $attachmentFolderPath | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+            if ($latestFile) {
+                # Optionally, you can keep the check for today's date if still desired,
+                # otherwise, remove the if statement below to attach any most recent file.
+                if ($latestFile.LastWriteTime.Date -eq (Get-Date).Date) {
+                    $mailItem.Attachments.Add($latestFile.FullName) | Out-Null
+                    Write-Host "Attached: $($latestFile.Name)"
+                } else {
+                    [System.Windows.Forms.MessageBox]::Show("Attachment not added. The most recently updated file was not updated today.", "Attachment Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                }
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("No files found in the specified attachment folder.", "Attachment Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+        } elseif ($attachmentFolderPath -and !(Test-Path $attachmentFolderPath)) {
+            [System.Windows.Forms.MessageBox]::Show("The specified attachment folder does not exist: $attachmentFolderPath", "Attachment Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error opening template or attaching file: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        # Release the Outlook object if it was created within the function
+        if ($outlook) {
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($outlook) | Out-Null
+            Remove-Variable -Name outlook
+        }
+    }
+}
+
+# Function to open UAT or No UAT template based on file date
+function Open-UATorNoUAT {
+    try {
+        $fileInfo = Get-Item $trackerFilePath
+
+        if ($fileInfo.LastWriteTime.Date -eq (Get-Date).Date) {
+            # File updated today, open UAT.oft and attach
+            $mailItem = $outlook.CreateItemFromTemplate($templatePathUAT)
+            $mailItem.Display()
+            $mailItem.Attachments.Add($trackerFilePath) | Out-Null
+        } else {
+            # File not updated today, open no new UAT files.oft
+            $mailItem = $outlook.CreateItemFromTemplate($templatePathNoUAT)
+            $mailItem.Display()
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
+
+#ServiceDesk Function
+$ServiceDeskURL = "https://servicedesk.thinkdmm.com/.do"
+function Open-Webpage {
+    param(
+        [string]$ServiceDeskURL  #  The URL to open.
+    )
+    try {
+        # Attempt to open the URL.  Start-Process is the preferred way in PowerShell.
+        Start-Process $ServiceDeskURL
+        Write-Verbose "Successfully opened webpage: $ServiceDeskURL"
+    } catch {
+        # Handle any errors that occur during the process.
+        Write-Error "Failed to open webpage: $ServiceDeskURL.  Error: $($_.Exception.Message)"
+        # Provide user feedback in the console.  Consider adding a popup message.
+        Write-Warning "Could not open the webpage.  Please check the URL and your default browser configuration."
+    }
+}
+
+#EH Health Tracker Launch
+$EHTrackerPath = "C:\Users\Username\Documents\YourFolder"
+function Start-Program {
+    param(
+    [string]$Path
+    )
+  try {
+        # Start the process
+        Start-Process -FilePath $Path
+    } catch {
+        # Catch any exceptions that occur during the Start-Process command
+        Write-Error "Failed to start program: $($_.Exception.Message)"
+        [System.Windows.MessageBox]::Show("Failed to start program: $($_.Exception.Message)", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
+    }
+}
+
+#Shortcut Function
+function Open-Folder {
+    param (
+        [string]$path
+    )
+    try {
+        if (Test-Path $path -PathType Container) {
+            Invoke-Item $path
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Folder not found.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error opening folder: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
+
+#Load Programs Function
+function Load-Data {
+    $grid.Rows.Clear()
+
+    $files1 = Get-ChildItem $liveprog -File -Filter *.exe | Where-Object { $_.Name -ne "RenameFiles.exe" }
+    $files2 = Get-ChildItem $testprog -File -Filter *.exe | Where-Object { $_.Name -ne "RenameFiles.exe" } | Group-Object Name -AsHashTable
+
+    foreach ($file in $files1) {
+        $name = $file.Name
+        $time1 = $file.LastWriteTime
+        $exists = $files2.ContainsKey($name)
+        $time2 = if ($exists) { $files2[$name].LastWriteTime } else { "Not Found" }
+
+        $match = ($exists -and $time1 -eq $time2)
+        $mismatch = ($exists -and $time1 -ne $time2)
+
+        $show = switch ($filterComboBox.SelectedItem) {
+            "Only Matching"    { $match }
+            "Only Mismatched"  { $mismatch }
+            "Only Not Found"   { -not $exists }
+            default            { $true }
+        }
+
+        if ($show) {
+            $rowIndex = $grid.Rows.Add($name, $time1, $time2)
+            if ($time2 -eq "Not Found") {
+                $grid.Rows[$rowIndex].DefaultCellStyle.BackColor = 'LightYellow'
+            } elseif ($time1 -ne $time2) {
+                $grid.Rows[$rowIndex].DefaultCellStyle.BackColor = 'LightCoral'
+            } else {
+                $grid.Rows[$rowIndex].DefaultCellStyle.BackColor = 'LightGreen'
+            }
+        }
+    }
+
+    #Update refresh label and log
+    $now = Get-Date
+    $refreshLabel.Text = "Last refreshed today at: $($now.ToString('hh:mm:ss tt'))"
+}
+
+#Create program table
+$grid = New-Object System.Windows.Forms.DataGridView
+$grid.Size = New-Object System.Drawing.Size(500, 400)
+$grid.Location = New-Object System.Drawing.Point(10, 50)
+$grid.Anchor = 'Top, Left, Right, Bottom'
+$grid.AutoSizeColumnsMode = 'AllCells'
+$grid.AllowUserToAddRows = $false
+$grid.ReadOnly = $true
+$grid.ColumnCount = 2
+$grid.Columns[0].Name = "File Name"
+$grid.Columns[1].Name = "Timestamp in Live Folder"
+$form.Controls.Add($grid)
+
+#Filter Label
+$filterLabel = New-Object System.Windows.Forms.Label
+$filterLabel.Text = "Filter:"
+$filterLabel.Location = New-Object System.Drawing.Point(10, 15)
+$filterLabel.Size = New-Object System.Drawing.Size(40, 20)
+$form.Controls.Add($filterLabel)
+
+#Filter Box
+$filterComboBox = New-Object System.Windows.Forms.ComboBox
+$filterComboBox.Location = New-Object System.Drawing.Point(60, 12)
+$filterComboBox.Size = New-Object System.Drawing.Size(150, 20)
+$filterComboBox.DropDownStyle = "DropDownList"
+$filterComboBox.Items.AddRange(@("All", "Only Matching", "Only Mismatched", "Only Not Found"))
+$filterComboBox.SelectedIndex = 0
+$form.Controls.Add($filterComboBox)
+
+#Refresh Label
+$refreshLabel = New-Object System.Windows.Forms.Label
+$refreshLabel.Location = New-Object System.Drawing.Point(230, 15)
+$refreshLabel.Size = New-Object System.Drawing.Size(190, 20)
+$form.Controls.Add($refreshLabel)
+
+#Manual Refresh Button
+$refreshButton = New-Object System.Windows.Forms.Button
+$refreshButton.Text = "Refresh Now"
+$refreshButton.Location = New-Object System.Drawing.Point(425, 10)
+$refreshButton.Size = New-Object System.Drawing.Size(100, 25)
+$form.Controls.Add($refreshButton)
+
+# UAT Report Button
+$buttonUAT = New-Object System.Windows.Forms.Button
+$buttonUAT.Location = New-Object System.Drawing.Point (550, 50)
+$buttonUAT.Size = New-Object System.Drawing.Size(175, 25)
+$buttonUAT.Text = "UAT Report"
+$buttonUAT.Add_Click({ Open-UATorNoUAT })
+$form.Controls.Add($buttonUAT)
+
+# Open Items Report Button
+$buttonOpenItems = New-Object System.Windows.Forms.Button
+$buttonOpenItems.Location = New-Object System.Drawing.Point(550, 90)
+$buttonOpenItems.Size = New-Object System.Drawing.Size(175, 25)
+$buttonOpenItems.Text = "Open Items Report"
+$buttonOpenItems.Add_Click({ Open-OutlookTemplate -templatePath $templatePathOpenItems -attachmentPath $openItemsFilePath })
+$form.Controls.Add($buttonOpenItems)
+
+#LOE Button
+$buttonLOE = New-Object System.Windows.Forms.Button
+$buttonLOE.Location = New-Object System.Drawing.Point(550, 130)
+$buttonLOE.Size = New-Object System.Drawing.Size(175, 25)
+$buttonLOE.Text = "LOE Report"
+$buttonLOE.Add_Click({ Open-LOEEmail $templatePathLOE -attachmentFolderPath $FolderPathLOE })
+$form.Controls.Add($buttonLOE)
+
+#Incoming files shortcut button.
+$buttonIncoming = New-Object System.Windows.Forms.Button
+$buttonIncoming.Location = New-Object System.Drawing.Point(550, 170)
+$buttonIncoming.Size = New-Object System.Drawing.Size(175, 25)
+$buttonIncoming.Text = "Incoming Files"
+$buttonIncoming.Add_Click({Open-Folder -path $global:folderPaths["Incoming Files"] })
+$form.Controls.Add($buttonIncoming)
+
+#ServiceDesk Button
+$buttonSD = New-Object System.Windows.Forms.Button
+$buttonSD.Location = New-Object System.Drawing.Point(550, 210)
+$buttonSD.Size = New-Object System.Drawing.Size(175, 25)
+$buttonSD.Text = 'Service Desk'
+$buttonSD.Add_Click({ Open-Webpage -ServiceDeskURL $ServiceDeskURL })
+$form.Controls.Add($buttonSD)
+
+#EH Tracker Button
+$buttonEHT = New-Object System.Windows.Forms.Button
+$buttonEHT.Location = New-Object System.Drawing.Point(550, 250)
+$buttonEHT.Size = New-Object System.Drawing.Size(175, 25)
+$buttonEHT.Text = 'EH Tracker'
+$buttonEHT.Add_Click({ Start-Program -Path $EHTrackerPath})
+$form.Controls.Add($buttonEHT)
+
+#Event Handlers
+$refreshButton.Add_Click({ Load-Data })
+$filterComboBox.Add_SelectedIndexChanged({ Load-Data })
+
+#Timer for Auto-Refresh
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 1800000  # 30 minutes in milliseconds
+$timer.Add_Tick({ Load-Data })
+$timer.Start()
+
+#Initial Load
+Load-Data
+
+#Show the form
+[void]$form.ShowDialog()
