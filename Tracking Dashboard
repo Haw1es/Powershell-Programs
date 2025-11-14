@@ -1,0 +1,802 @@
+# Import and install the ImportExcel module.
+try {
+    Import-Module -Name ImportExcel -ErrorAction Stop
+} catch {
+    Write-Error "ImportExcel module not found. Attempting automatic install now."
+    try {
+        Install-Module -Name ImportExcel -Force -Scope CurrentUser -ErrorAction Stop
+        Write-Host "ImportExcel Module Successfully Installed, Importing Now."
+        Import-Module -Name ImportExcel -ErrorAction Stop
+    } catch {
+        Write-Error "Install and import Failed. Please ensure you have NuGet installed and are running PowerShell as Administrator. Contact IT if the issue persists."
+        return
+    }
+}
+
+# Add necessary assemblies for WPF UI elements.
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+
+# Minimizes the PowerShell console window (useful for UI applications).
+Add-Type -Name Window -Namespace Console -MemberDefinition '
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+'
+$consolePtr = [Console.Window]::GetConsoleWindow()
+[Console.Window]::ShowWindow($consolePtr, 6)
+
+#Excel File Paths.
+##ENter paths to Excel sheets for different projects.
+$excelFile1 = "C:\Users\Username\Documents\YourFolder\JOB TRACKING.xlsx"
+
+
+$savedDataFile = Join-Path (Get-Location) "CombinedJobTracking_Updated.csv"
+
+# Function to import and manipulate data from Excel files
+function Import-And-Manipulate-Excel {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath
+    )
+
+    try {
+        $data = $null
+
+        # Logic for "JOB Tracking.xlsx"
+        if ($FilePath -eq $excelFile1) {
+            Write-Host "JOB TRACKING.xlsx..."
+            $startRow = 3
+            $data = Import-Excel -Path $FilePath -StartRow $startRow -ErrorAction Stop
+           
+            if ($data.Count -gt 0 -and $data[0].PSObject.Properties.Name -contains "Column6") {
+                $data = $data | Select-Object -ExcludeProperty "Column6"
+            }
+
+            # Transform 'Company' column into 'WorkorderNumber' and 'JobName'.
+            $data = $data | ForEach-Object {
+                $company = $_.Company
+                $workOrderNumber = ""
+                $jobName = ""
+
+                if ($null -ne $company -and $company.Length -ge 6) {
+                    $workOrderNumber = $company.Substring(0, 6).Trim()
+                    $jobName = $company.Substring(6).Trim()
+                }
+
+                [PSCustomObject]@{
+                    'WorkorderNumber'   = $workOrderNumber
+                    'JobName'           = $jobName
+                    'Mailing List Amount' = $_.'Mailing List Amount'
+                    'Receipt Date'      = $_.'Receipt Date'
+                    'SLA Drop Date'     = $_.'SLA Drop Date'
+                    'Postage'           = $_.Postage
+                    'Company'           = $_.Company
+                    'ClientName'        = "Boston Environmental"
+                }
+            }
+
+            
+            $data = $data | Where-Object { -not [string]::IsNullOrWhiteSpace($_.WorkorderNumber) }
+
+           
+            $columnMapping = @{
+                "WorkorderNumber"   = "Work Order #"
+                "ClientName"        = "Customer"
+                "JobName"           = "Job Name"
+                "Mailing List Amount" = "Quantity"
+                "SLA Drop Date"     = "Mail By"
+            }
+            $selectedData = foreach ($row in $data) {
+                $obj = [ordered]@{}
+                foreach ($key in $columnMapping.Keys) {
+                    if ($row.PSObject.Properties.Name -contains $key) {
+                        $obj[$columnMapping[$key]] = $row.$key
+                    } else {
+                        $obj[$columnMapping[$key]] = $null
+                    }
+                }
+                [PSCustomObject]$obj
+            }
+
+            # Add 'Mailed' column, initialized to null.
+            $selectedData = $selectedData | Select-Object *, @{Name='Mailed'; Expression={$null}}
+
+            return $selectedData
+
+        # Logic for "Status Report.xlsx"
+        } elseif ($FilePath -eq $excelFile2) {
+            Write-Host "Processing Status Report.xlsx..."
+            $data = Import-Excel -Path $FilePath -StartRow 1 -ErrorAction Stop
+
+            
+            $columnMapping = @{
+                "Work Order # " = "Work Order #" 
+                "Job Name"      = "Job Name"
+                "Customer"      = "Customer"
+                "Quantity"      = "Quantity"
+                "Drop Date"     = "Mail By"
+            }
+            $selectedData = foreach ($row in $data) {
+                $obj = [ordered]@{}
+                foreach ($key in $columnMapping.Keys) {
+                    if ($row.PSObject.Properties.Name -contains $key) {
+                        $obj[$columnMapping[$key]] = $row.$key
+                    } else {
+                        $obj[$columnMapping[$key]] = $null
+                    }
+                }
+                $obj['Mailed'] = $null 
+                [PSCustomObject]$obj
+            }
+            return $selectedData
+
+        # Logic for "First Job Tracking.xlsx"
+        } elseif ($FilePath -eq $excelFile3) {
+            Write-Host "Processing First Job Tracking.xlsx..."
+            $data = Import-Excel -Path $FilePath -StartRow 1 -ErrorAction Stop
+
+            $selectedData = $data | ForEach-Object {
+                $row = $_
+
+                
+                $workOrderVal = $null
+                if ($row.PSObject.Properties.Name -contains "Work Order #") {
+                    $workOrderVal = $row.'Work Order #'
+                }
+
+                
+                $customerName = $null
+                if ($row.PSObject.Properties.Name -contains "Customer") {
+                    $customerName = [string]$row.Customer
+                }
+                                
+                $jobNameFinal = $null
+                if ($row.PSObject.Properties.Name -contains "JobName") {
+                    $jobNameFinal = [string]$row.JobName
+                }
+                               
+                $quantityVal = $null
+                if ($row.PSObject.Properties.Name -contains "Quantity") {
+                    $quantityVal = $row.Quantity
+                }
+                                
+                $mailByDate = $null
+                if ($row.PSObject.Properties.Name -contains "MailDate" -and $row.MailDate -ne $null) {
+                    if ($row.MailDate -is [string]) {
+                        try { $mailByDate = [datetime]::Parse($row.MailDate) } catch { Write-Warning "Could not convert MailDate '$($row.MailDate)' to date for row from $FilePath."; $mailByDate = $null }
+                    } elseif ($row.MailDate -is [datetime]) {
+                        $mailByDate = $row.MailDate
+                    }
+                }
+
+                # Construct the final output with correct columns and types/names
+                [PSCustomObject]@{
+                    'Work Order #' = $workOrderVal
+                    'Customer'     = $customerName
+                    'Job Name'     = $jobNameFinal
+                    'Quantity'     = $quantityVal
+                    'Mail By'      = $mailByDate
+                    'Mailed'       = $null 
+                }
+            }
+            return $selectedData
+
+        # Logic for "Lum Job Tracking.xlsx"
+        } elseif ($FilePath -eq $excelFile4) {
+            Write-Host "Processing Lum Job Tracking.xlsx..."
+            $data = Import-Excel -Path $FilePath -StartRow 1 -ErrorAction Stop
+
+            $selectedData = $data | ForEach-Object {
+                $row = $_
+                                
+                $workOrderVal = $null
+                if ($row.PSObject.Properties.Name -contains "Work Order") {
+                    $workOrderVal = $row."Work Order"
+                }
+                                
+                $customerName = $null
+                if ($row.PSObject.Properties.Name -contains "Customer") {
+                    $customerName = [string]$row.Customer
+                }
+
+                $jobNameFinal = $null
+                if ($row.PSObject.Properties.Name -contains "JobName") {
+                    $jobNameFinal = [string]$row.JobName
+                }
+
+                $quantityVal = $null
+                if ($row.PSObject.Properties.Name -contains "Qty") {
+                    $quantityVal = $row.Qty
+                }
+
+                $mailByDate = $null
+                if ($row.PSObject.Properties.Name -contains "MailDate" -and $row.MailDate -ne $null) {
+                    if ($row.MailDate -is [string]) {
+                        try { $mailByDate = [datetime]::Parse($row.MailDate) } catch { Write-Warning "Could not convert MailDate '$($row.MailDate)' to date for row from $FilePath."; $mailByDate = $null }
+                    } elseif ($row.MailDate -is [datetime]) {
+                        $mailByDate = $row.MailDate
+                    }
+                }
+
+                # Construct the final output with correct columns and types/names
+                [PSCustomObject]@{
+                    'Work Order #' = $workOrderVal
+                    'Customer'     = $customerName
+                    'Job Name'     = $jobNameFinal
+                    'Quantity'     = $quantityVal
+                    'Mail By'      = $mailByDate
+                    'Mailed'       = $null
+                }
+            }
+            return $selectedData
+
+        # Logic for "Ad Job Tracking.xlsx"
+        } elseif ($FilePath -eq $excelFile5) {
+            Write-Host "Processing Ad Job Tracking.xlsx..."
+            $data = Import-Excel -Path $FilePath -StartRow 1 -ErrorAction Stop
+
+            $selectedData = $data | ForEach-Object {
+                $row = $_
+
+                $workOrderVal = $null
+                if ($row.PSObject.Properties.Name -contains "WorkOrder") {
+                    $workOrderVal = $row.WorkOrder
+                }
+
+                $customerName = $null
+                if ($row.PSObject.Properties.Name -contains "Customer") {
+                    $customerName = [string]$row.Customer
+                }
+
+                $jobNameFinal = $null
+                if ($row.PSObject.Properties.Name -contains "File Name") {
+                    $jobNameFinal = [string]$row."File Name"
+                }
+
+                $quantityVal = $null
+                if ($row.PSObject.Properties.Name -contains "Qty") {
+                    $quantityVal = $row.Qty
+                }
+
+                $mailByDate = $null
+                if ($row.PSObject.Properties.Name -contains "Drop Date" -and $row."Drop Date" -ne $null) {
+                    if ($row."Drop Date" -is [string]) {
+                        try { $mailByDate = [datetime]::Parse($row."Drop Date") } catch { Write-Warning "Could not convert Drop Date '$($row."Drop Date")' to date for row from $FilePath."; $mailByDate = $null }
+                    } elseif ($row."Drop Date" -is [datetime]) {
+                        $mailByDate = $row."Drop Date"
+                    }
+                }
+
+                # Construct the final output with correct columns and types/names
+                [PSCustomObject]@{
+                    'Work Order #' = $workOrderVal
+                    'Customer'     = $customerName
+                    'Job Name'     = $jobNameFinal
+                    'Quantity'     = $quantityVal
+                    'Mail By'      = $mailByDate
+                    'Mailed'       = $null 
+                }
+            }
+            return $selectedData
+
+        # Logic for "Irv Job Tracker.xlsx"
+        } elseif ($FilePath -eq $excelFile7) {
+            Write-Host "Processing Irving Job Tracker.xlsx..."
+            $data = Import-Excel -Path $FilePath -StartRow 1 -ErrorAction Stop
+
+            $selectedData = $data | ForEach-Object {
+                $row = $_
+
+                $workOrderVal = $null
+                if ($row.PSObject.Properties.Name -contains "Work Order #") {
+                    $workOrderVal = $row."Work Order #"
+                }
+
+                $customerName = $null
+                if ($row.PSObject.Properties.Name -contains "Customer") {
+                    $customerName = [string]$row.Customer
+                }
+
+                $jobNameFinal = $null
+                if ($row.PSObject.Properties.Name -contains "Job Name") {
+                    $jobNameFinal = [string]$row."Job Name"
+                }
+
+                # Combine 'Qty 6x9' and 'Qty 9x12' into 'Quantity'
+                $qty6x9 = 0
+                if ($row.PSObject.Properties.Name -contains "Qty 6x9" -and $row."Qty 6x9" -ne $null) {
+                    try { $qty6x9 = [int]$row."Qty 6x9" } catch { Write-Warning "Could not convert 'Qty 6x9' to integer for row from $FilePath."; $qty6x9 = 0 }
+                }
+
+                $qty9x12 = 0
+                if ($row.PSObject.Properties.Name -contains "Qty 9x12" -and $row."Qty 9x12" -ne $null) {
+                    try { $qty9x12 = [int]$row."Qty 9x12" } catch { Write-Warning "Could not convert 'Qty 9x12' to integer for row from $FilePath."; $qty9x12 = 0 }
+                }
+                $quantityVal = $qty6x9 + $qty9x12
+
+                $mailByDate = $null
+                if ($row.PSObject.Properties.Name -contains "Mail By" -and $row."Mail By" -ne $null) {
+                    if ($row."Mail By" -is [string]) {
+                        try { $mailByDate = [datetime]::Parse($row."Mail By") } catch { Write-Warning "Could not parse Mail By '$($row."Mail By")' to date for row."; $mailByDate = $null }
+                    } elseif ($row."Mail By" -is [datetime]) {
+                        $mailByDate = $row."Mail By"
+                    }
+                }
+
+                # Construct the final output with correct columns and types/names
+                [PSCustomObject]@{
+                    'Work Order #' = $workOrderVal
+                    'Customer'     = $customerName
+                    'Job Name'     = $jobNameFinal
+                    'Quantity'     = $quantityVal
+                    'Mail By'      = $mailByDate
+                    'Mailed'       = $null 
+                }
+            }
+            return $selectedData
+
+        # Default logic to deal with new file paths not specified above.      
+        } else {
+            Write-Warning "Unknown file path: $FilePath. No specific manipulation applied. Attempting generic import."
+            $data = Import-Excel -Path $FilePath -StartRow 1 -ErrorAction Stop
+            # Create a default mapping that keeps original column names.
+            $columnMapping = @{}
+            $data | Get-Member -MemberType Properties | ForEach-Object {
+                $columnMapping[$_.Name] = $_.Name
+            }
+            $selectedData = foreach ($row in $data) {
+                $obj = [ordered]@{}
+                foreach ($key in $columnMapping.Keys) {
+                    if ($row.PSObject.Properties.Name -contains $key) {
+                        $obj[$columnMapping[$key]] = $row.$key
+                    } else {
+                        $obj[$columnMapping[$key]] = $null
+                    }
+                }
+                $obj['Mailed'] = $null 
+                [PSCustomObject]$obj
+            }
+            return $selectedData
+        }
+
+    } catch {
+        Write-Error "Error processing file '$FilePath': $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# Import data from all defined Excel files.
+Write-Host "Importing data from Excel files..."
+$data1 = Import-And-Manipulate-Excel -FilePath $excelFile1
+$data2 = Import-And-Manipulate-Excel -FilePath $excelFile2
+$data3 = Import-And-Manipulate-Excel -FilePath $excelFile3
+$data4 = Import-And-Manipulate-Excel -FilePath $excelFile4
+$data5 = Import-And-Manipulate-Excel -FilePath $excelFile5
+$data7 = Import-And-Manipulate-Excel -FilePath $excelFile7
+
+# Combine the data from all files.
+$combinedData = @()
+if ($data1) { $combinedData += $data1 }
+if ($data2) { $combinedData += $data2 }
+if ($data3) { $combinedData += $data3 }
+if ($data4) { $combinedData += $data4 }
+if ($data5) { $combinedData += $data5 }
+if ($data7) { $combinedData += $data7 }
+
+# Check if any data was successfully imported.
+if ($combinedData.Count -eq 0) {
+    Write-Warning "No data was successfully imported from any of the specified Excel files. Please check file paths and permissions."    
+    return
+}
+
+Write-Host "Successfully imported $($combinedData.Count) records from Excel files."
+
+# Load and Merge 'Mailed' column from saved CSV file.
+$savedMailedData = @{}
+if (Test-Path $savedDataFile) {
+    Write-Host "Loading saved data from $savedDataFile..."
+    try {
+        $loadedSavedData = Import-Csv -Path $savedDataFile -ErrorAction SilentlyContinue
+        foreach ($row in $loadedSavedData) {
+            if ($row.PSObject.Properties.Name -contains "Work Order #" -and $row.PSObject.Properties.Name -contains "Mailed") {
+                $workOrder = $row."Work Order #"
+                $mailedDateString = $row.Mailed 
+                
+                $mailedDate = $null
+                if (-not [string]::IsNullOrWhiteSpace($mailedDateString)) {
+                    try {
+                        $mailedDate = [datetime]::Parse($mailedDateString)
+                    } catch {
+                        Write-Warning "Could not parse saved Mailed date '$mailedDateString' for Work Order '$workOrder'. Error: $($_.Exception.Message)"
+                        
+                        $mailedDate = $mailedDateString 
+                    }
+                }
+
+                if ($workOrder -ne $null) {
+                    $savedMailedData[$workOrder.ToString()] = $mailedDate
+                }
+            }
+        }
+        Write-Host "Successfully loaded $($savedMailedData.Count) 'Mailed' entries from CSV."
+    } catch {
+        Write-Warning "Could not load saved data from '$savedDataFile': $($_.Exception.Message)"
+    }
+} else {
+    Write-Host "No existing saved data file found at '$savedDataFile'. Starting fresh."
+}
+
+# Merge 'Mailed' data into combinedData.
+Write-Host "Merging 'Mailed' data into combined dataset..."
+foreach ($item in $combinedData) {
+    if ($item.PSObject.Properties.Name -contains "Work Order #" -and $item."Work Order #" -ne $null) {
+        $workOrderKey = $item."Work Order #".ToString()
+        if ($savedMailedData.ContainsKey($workOrderKey)) {
+            $item.Mailed = $savedMailedData[$workOrderKey]            
+        }
+    }
+}
+Write-Host "Mailed data merge complete."
+
+#Data Grid Creation
+$observableData = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+foreach ($item in $combinedData) {
+    $clonedItem = $item | Select-Object *
+    $observableData.Add($clonedItem)
+}
+Write-Host "Prepared $($observableData.Count) records for DataGrid display."
+
+
+# Function to display the data in a  DataGrid.
+function Show-DataGrid {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Collections.ObjectModel.ObservableCollection[object]]$Data 
+    )
+
+    # Create the main window for the DataGrid.
+    $window = New-Object System.Windows.Window
+    $window.Title = "Combined Job Tracking Data"
+    $window.Height = 600
+    $window.Width = 1200
+    $window.WindowStartupLocation = "CenterScreen" 
+
+    # Create a Grid layout panel for the window content.
+    $grid = New-Object System.Windows.Controls.Grid
+    
+    $colDef1 = New-Object System.Windows.Controls.ColumnDefinition
+    $colDef1.Width = [System.Windows.GridLength]::new(200) 
+    $grid.ColumnDefinitions.Add($colDef1)
+
+    $colDef2 = New-Object System.Windows.Controls.ColumnDefinition
+    $colDef2.Width = [System.Windows.GridLength]::new(1, 'Star') 
+    $grid.ColumnDefinitions.Add($colDef2)
+
+    # Define row definitions for the grid
+    $rowDef1 = New-Object System.Windows.Controls.RowDefinition
+    $rowDef1.Height = [System.Windows.GridLength]::new(1, 'Star')
+    $grid.RowDefinitions.Add($rowDef1)
+
+    $rowDef2 = New-Object System.Windows.Controls.RowDefinition
+    $rowDef2.Height = [System.Windows.GridLength]::Auto 
+    $grid.RowDefinitions.Add($rowDef2)
+
+    # Filter Controls
+    $filterStackPanel = New-Object System.Windows.Controls.StackPanel
+    $filterStackPanel.Margin = "10"
+    $filterStackPanel.VerticalAlignment = "Top"
+    [System.Windows.Controls.Grid]::SetColumn($filterStackPanel, 0)
+    [System.Windows.Controls.Grid]::SetRow($filterStackPanel, 0)
+
+    # Customer Filter Label and ComboBox.
+    $customerLabel = New-Object System.Windows.Controls.Label
+    $customerLabel.Content = "Filter by Customer:"
+    $customerLabel.FontWeight = "Bold"
+    $filterStackPanel.Children.Add($customerLabel)
+
+    $customerComboBox = New-Object System.Windows.Controls.ComboBox
+    $customerComboBox.Margin = "0,5,0,10"
+    $customerComboBox.Width = 180
+    $customerComboBox.HorizontalAlignment = "Left"
+    $customerComboBox.IsEditable = $false
+    $filterStackPanel.Children.Add($customerComboBox)
+
+    # Mail By Week Filter Label and ComboBox.
+    $mailByLabel = New-Object System.Windows.Controls.Label
+    $mailByLabel.Content = "Filter by Mail By Week:"
+    $mailByLabel.FontWeight = "Bold"
+    $filterStackPanel.Children.Add($mailByLabel)
+
+    $mailByComboBox = New-Object System.Windows.Controls.ComboBox
+    $mailByComboBox.Margin = "0,5,0,10"
+    $mailByComboBox.Width = 180
+    $mailByComboBox.HorizontalAlignment = "Left"
+    $mailByComboBox.IsEditable = $false
+    $filterStackPanel.Children.Add($mailByComboBox)
+
+    # Clear Filters Button.
+    $clearFiltersButton = New-Object System.Windows.Controls.Button
+    $clearFiltersButton.Content = "Clear Filters"
+    $clearFiltersButton.Margin = "0,10,0,0"
+    $clearFiltersButton.Padding = "5"
+    $clearFiltersButton.HorizontalAlignment = "Left"
+    $clearFiltersButton.Background = [System.Windows.Media.Brushes]::LightGray
+    $clearFiltersButton.BorderBrush = [System.Windows.Media.Brushes]::Gray
+    $clearFiltersButton.BorderThickness = [System.Windows.Thickness]::new(1)
+    $filterStackPanel.Children.Add($clearFiltersButton)
+
+    # DataGrid definition.
+    $dataGrid = New-Object System.Windows.Controls.DataGrid
+    $dataGrid.AutoGenerateColumns = $false
+    $dataGrid.CanUserAddRows = $false
+    $dataGrid.CanUserDeleteRows = $false
+    $dataGrid.IsReadOnly = $false 
+    $dataGrid.HeadersVisibility = [System.Windows.Controls.DataGridHeadersVisibility]::Column
+    $dataGrid.SelectionUnit = [System.Windows.Controls.DataGridSelectionUnit]::Cell
+    $dataGrid.SelectionMode = [System.Windows.Controls.DataGridSelectionMode]::Single
+
+    # Set DataGrid to the second column of the grid.
+    [System.Windows.Controls.Grid]::SetColumn($dataGrid, 1)
+    [System.Windows.Controls.Grid]::SetRow($dataGrid, 0)
+
+    # Define column order and headers for the DataGrid.
+    $columns = @(
+        "Work Order #",
+        "Customer",
+        "Job Name",
+        "Quantity",
+        "Mail By",
+        "Mailed"
+    )
+    foreach ($column in $columns) {
+        $dataGridColumn = New-Object System.Windows.Controls.DataGridTextColumn
+        $dataGridColumn.Header = $column 
+        $dataGridColumn.Binding = New-Object System.Windows.Data.Binding("$column") 
+
+        if ($column -eq "Mail By") {
+            $dataGridColumn.Binding.StringFormat = 'M/dd/yyyy'
+        }
+        
+        # Make 'Mailed' column editable
+        if ($column -eq "Mailed") {
+            $dataGridColumn.IsReadOnly = $false
+            $dataGridColumn.Binding.StringFormat = 'M/dd/yyyy'
+        } else {
+            $dataGridColumn.IsReadOnly = $true 
+        }
+        
+        $dataGrid.Columns.Add($dataGridColumn)
+    }
+
+    # Assign the observable data to the DataGrid   
+    $script:clonedData = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+    foreach ($item in $Data) {
+        $clonedItem = $item | Select-Object *
+        $script:clonedData.Add($clonedItem)
+    }
+    $dataGrid.ItemsSource = $script:clonedData
+
+    # Save Button.
+    $saveButton = New-Object System.Windows.Controls.Button
+    $saveButton.Content = "Save Data to CSV"
+    $saveButton.Margin = "10"
+    $saveButton.Padding = "10,5"
+    $saveButton.HorizontalAlignment = "Center"
+    $saveButton.VerticalAlignment = "Center"
+    $saveButton.FontSize = 14
+    $saveButton.FontWeight = "Bold"
+    $saveButton.Background = [System.Windows.Media.Brushes]::LightGreen
+    $saveButton.BorderBrush = [System.Windows.Media.Brushes]::DarkGreen
+    $saveButton.BorderThickness = [System.Windows.Thickness]::new(1)
+    $saveButton.Foreground = [System.Windows.Media.Brushes]::DarkSlateGray
+    
+    [System.Windows.Controls.Grid]::SetRow($saveButton, 1)
+    [System.Windows.Controls.Grid]::SetColumnSpan($saveButton, 2)
+
+    # Add event handler for the Save button.
+    $saveButton.Add_Click({
+        try {
+            $csvColumnOrder = @(
+                "Work Order #",
+                "Customer",
+                "Job Name",
+                "Quantity",
+                "Mail By",
+                "Mailed"
+            )
+            $outputPath = Join-Path (Get-Location) "CombinedJobTracking_Updated.csv"
+
+            # 1. Initialize a dictionary to hold the merged data, keyed by Work Order #            
+            $mergedDataMap = [System.Collections.Generic.Dictionary[string, object]]::new()
+
+            # 2. Load existing data from the CSV file into the map first
+            if (Test-Path $outputPath) {
+                Write-Host "DEBUG: Loading existing CSV for merge..."
+                try {
+                    $loadedOldCsvData = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue
+                    foreach ($row in $loadedOldCsvData) {
+                        if ($row.PSObject.Properties.Name -contains "Work Order #" -and -not [string]::IsNullOrWhiteSpace($row."Work Order #")) {
+                            $workOrderKey = $row."Work Order #".ToString()                           
+                            if ($row.PSObject.Properties.Name -contains "Mail By" -and $row."Mail By" -is [string] -and -not [string]::IsNullOrWhiteSpace($row."Mail By")) {
+                                try { $row."Mail By" = [datetime]::Parse($row."Mail By") } catch {}
+                            }
+                            if ($row.PSObject.Properties.Name -contains "Mailed" -and $row.Mailed -is [string] -and -not [string]::IsNullOrWhiteSpace($row.Mailed)) {
+                                try { $row.Mailed = [datetime]::Parse($row.Mailed) } catch {}
+                            }
+                            $mergedDataMap.Add($workOrderKey, $row)
+                        }
+                    }
+                    Write-Host "DEBUG: Loaded $($mergedDataMap.Count) records from existing CSV for merge."
+                } catch {
+                    Write-Warning "Could not load existing CSV data for merge: $($_.Exception.Message)"
+                }
+            }
+
+            # 3. Iterate through the current DataGrid items and update/add to the merged map            
+            Write-Host "DEBUG: Merging current DataGrid data (all data, not just filtered)..."
+            $currentDataFromGrid = @($script:clonedData) # Get ALL current items from the DataGrid's source
+            foreach ($item in $currentDataFromGrid) {
+                if ($item.PSObject.Properties.Name -contains "Work Order #" -and -not [string]::IsNullOrWhiteSpace($item."Work Order #")) {
+                    $workOrderKey = $item."Work Order #".ToString()
+
+                    
+                    $newItem = [PSCustomObject]@{
+                        'Work Order #' = $item."Work Order #"
+                        'Customer'     = $item.Customer
+                        'Job Name'     = $item."Job Name"
+                        'Quantity'     = $item.Quantity
+                        'Mail By'      = $item."Mail By"
+                        'Mailed'       = $item.Mailed
+                    }
+
+                    if ($mergedDataMap.ContainsKey($workOrderKey)) {                        
+                        $mergedDataMap[$workOrderKey] = $newItem                        
+                    } else {                        
+                        $mergedDataMap.Add($workOrderKey, $newItem)                        
+                    }
+                }
+            }
+            Write-Host "DEBUG: Merged map now contains $($mergedDataMap.Count) records."
+
+            # 4. Convert the merged map values back to an array for export
+            $dataToSave = $mergedDataMap.Values | Sort-Object "Work Order #" 
+
+            Write-Host "DEBUG: Final number of items to save: $($dataToSave.Count)"
+            if ($dataToSave.Count -gt 0) {
+                Write-Host "DEBUG: First item properties before final save formatting:"
+                $dataToSave[0] | Format-List -Force | Out-String | Write-Host
+            }
+
+            # 5. Format Mail By and Mailed dates to MM/dd/yyyy string for CSV export
+            $formattedDataToSave = $dataToSave | ForEach-Object {
+                $obj = $_ | Select-Object $csvColumnOrder 
+                if ($obj.PSObject.Properties.Name -contains "Mail By" -and $obj."Mail By" -is [datetime]) {
+                    $obj."Mail By" = $obj."Mail By".ToString('MM/dd/yyyy')
+                }
+                if ($obj.PSObject.Properties.Name -contains "Mailed") {
+                    if ($obj.Mailed -is [datetime]) {
+                        $obj.Mailed = $obj.Mailed.ToString('MM/dd/yyyy')
+                    } elseif ($obj.Mailed -is [string] -and -not [string]::IsNullOrWhiteSpace($obj.Mailed)) {                        
+                        try {
+                            $parsedDate = [datetime]::Parse($obj.Mailed)
+                            $obj.Mailed = $parsedDate.ToString('MM/dd/yyyy')
+                        } catch {
+                            Write-Warning "Could not parse Mailed date string '$($obj.Mailed)' for CSV export. Keeping as is."
+                        }
+                    }
+                }
+                $obj
+            }
+
+            # 6. Check if the file exists and remove it to ensure overwrite (this is still necessary for a clean merge)
+            if (Test-Path $outputPath) {
+                Remove-Item $outputPath -Force
+                Write-Host "DEBUG: Existing file removed for clean rewrite: $outputPath"
+            }
+
+            # 7. Export the merged and formatted data to a new CSV file
+            $formattedDataToSave | Export-Csv -Path $outputPath -NoTypeInformation -Delimiter ',' -ErrorAction Stop
+
+            Write-Host "DEBUG: Data export to CSV completed."
+            [System.Windows.MessageBox]::Show("Data successfully saved to '$outputPath'", "Save Success", "OK", "Information") | Out-Null
+        } catch {
+            [System.Windows.MessageBox]::Show("Error saving data: $($_.Exception.Message)", "Save Error", "OK", "Error") | Out-Null
+            Write-Error "Error saving data: $($_.Exception.Message)"
+        }
+    })
+
+    # Filtering Logic and Functions.   
+    $script:selectedCustomer = "All Customers"
+    $script:selectedMailByWeek = "All Weeks"
+
+    # Function to apply filters to the DataGrid.
+    $script:ApplyFilters = {
+        param(
+            [string]$CustomerFilter,
+            [string]$MailByWeekFilter
+        )
+
+        # Start with the full cloned dataset.
+        $sourceData = $script:clonedData
+
+        $filteredData = $sourceData | Where-Object {
+            # Customer filter logic.
+            $customerMatch = ($CustomerFilter -eq "All Customers" -or $_.Customer -eq $CustomerFilter)
+
+            # Mail By Week filter logic.
+            $mailByMatch = $true
+            if ($MailByWeekFilter -ne "All Weeks" -and $_.'Mail By' -is [datetime]) {
+                $mailByDate = $_.'Mail By'
+                # Calculate the start of the week (Sunday).
+                $dayOfWeek = $mailByDate.DayOfWeek.value__
+                $startOfWeek = $mailByDate.AddDays(-$dayOfWeek).Date
+                $startOfWeekString = "Week of $($startOfWeek.ToString('yyyy-MM-dd'))"
+                $mailByMatch = ($startOfWeekString -eq $MailByWeekFilter)
+            }
+
+            # Combine both filter conditions.
+            $customerMatch -and $mailByMatch
+        }
+
+        # Update the DataGrid with the filtered data.
+        $dataGrid.ItemsSource = @($filteredData)
+        $dataGrid.Items.Refresh() 
+    }
+
+    # Populate Customer Filter ComboBox.   
+    $uniqueCustomers = $Data | Select-Object -ExpandProperty Customer | Sort-Object -Unique
+    $customerComboBox.Items.Add("All Customers")
+    foreach ($customer in $uniqueCustomers) {
+        if (-not [string]::IsNullOrWhiteSpace($customer)) {
+            $customerComboBox.Items.Add($customer)
+        }
+    }
+    $customerComboBox.SelectedItem = "All Customers"
+
+    # Populate Mail By Week ComboBox.    
+    $uniqueMailByWeeks = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($item in $Data) {
+        if ($item.'Mail By' -is [datetime]) {
+            $mailByDate = $item.'Mail By'
+            $dayOfWeek = $mailByDate.DayOfWeek.value__
+            $startOfWeek = $mailByDate.AddDays(-$dayOfWeek).Date
+            $weekString = "Week of $($startOfWeek.ToString('yyyy-MM-dd'))"
+            [void]$uniqueMailByWeeks.Add($weekString)
+        }
+    }
+    $mailByComboBox.Items.Add("All Weeks")
+    $uniqueMailByWeeks | Sort-Object | ForEach-Object { $mailByComboBox.Items.Add($_) }
+    $mailByComboBox.SelectedItem = "All Weeks"
+
+    # Event Handlers for ComboBoxes (filter on selection change).
+    $customerComboBox.Add_SelectionChanged({
+        $script:selectedCustomer = $customerComboBox.SelectedItem
+        $script:ApplyFilters.Invoke($script:selectedCustomer, $script:selectedMailByWeek)
+    })
+
+    $mailByComboBox.Add_SelectionChanged({
+        $script:selectedMailByWeek = $mailByComboBox.SelectedItem
+        $script:ApplyFilters.Invoke($script:selectedCustomer, $script:selectedMailByWeek)
+    })
+
+    # Event Handler for Clear Filters Button.
+    $clearFiltersButton.Add_Click({
+        $customerComboBox.SelectedItem = "All Customers"
+        $mailByComboBox.SelectedItem = "All Weeks"
+        
+    })
+
+    # Add filter controls, DataGrid, and Save button to the main grid.
+    $grid.Children.Add($filterStackPanel)
+    $grid.Children.Add($dataGrid)
+    $grid.Children.Add($saveButton)
+    $window.Content = $grid
+
+    # Apply filters initially to display all data when the window opens.
+    $script:ApplyFilters.Invoke($script:selectedCustomer, $script:selectedMailByWeek)
+
+    # Show the window and wait for it to close.
+    $window.ShowDialog() | Out-Null
+}
+
+# Display the combined data in a DataGrid.
+Show-DataGrid -Data $observableData
