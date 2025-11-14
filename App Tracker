@@ -1,0 +1,115 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+##Enter file path to application csv file##
+$csvPath = "C:\Users\Username\Documents\YourFolder\YourFile.csv"
+
+# Load existing data or show a warning if the file doesn't exist
+if (Test-Path $csvPath) {
+    try {
+        $applications = Import-Csv -Path $csvPath
+        if (-not $applications) {
+            Write-Host "`nWARNING: CSV file is empty or improperly formatted."
+            $applications = @()
+        }
+    } catch {
+        Write-Host "`nERROR: Failed to load CSV file. Details: $_"
+        $applications = @()
+    }
+} else {
+    Write-Host "`nWARNING: CSV file not found at '$csvPath'. Please create the file manually."
+    $applications = @()
+}
+
+# ... (Show-InputBox and Show-DateInputBox functions remain the same) ...
+
+# Create the form
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Application Tracking System"
+$form.Size = New-Object System.Drawing.Size(800, 400)
+$form.StartPosition = "CenterScreen"
+
+# Create DataGridView to display applications
+$grid = New-Object System.Windows.Forms.DataGridView
+$grid.Location = New-Object System.Drawing.Point(10, 10)
+$grid.Size = New-Object System.Drawing.Size(760, 250)
+$grid.AutoSizeColumnsMode = 'Fill'
+$grid.ReadOnly = $false
+$grid.AllowUserToAddRows = $true
+$grid.EditMode = 'EditOnEnter'
+$grid.ColumnCount = 5
+$grid.Columns[0].Name = 'Application Name'
+$grid.Columns[1].Name = 'Last Updated'
+$grid.Columns[2].Name = 'Pending Update'
+$grid.Columns[3].Name = 'Requested Update'
+$grid.Columns[4].Name = 'Update Status'
+
+# Load data into grid
+function Load-Data {
+    $grid.Rows.Clear()
+    foreach ($app in $applications) {
+        $grid.Rows.Add($app.'Application Name', $app.'Last Updated', $app.'Pending Update', $app.'Requested Update', $app.'Update Status')
+    }
+    Apply-RowColor
+}
+Load-Data
+
+# Apply color coding based on Update Status
+function Apply-RowColor {
+    foreach ($row in $grid.Rows) {
+        switch ($row.Cells[4].Value) {
+            "Completed" { $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen }
+            "In Progress" { $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Khaki }
+            "Pending" { $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Salmon }
+            default { $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::White }
+        }
+    }
+}
+
+# Handle CellEndEdit event to update data and save to CSV
+$grid.Add_CellEndEdit({
+    param($sender, $e)
+
+    $rowIndex = $e.RowIndex
+    $colIndex = $e.ColumnIndex
+
+    if ($rowIndex -ge 0) {
+        $name = $grid.Rows[$rowIndex].Cells[0].Value
+        $lastUpdated = $grid.Rows[$rowIndex].Cells[1].Value
+        $pendingUpdate = $grid.Rows[$rowIndex].Cells[2].Value
+        $requestedUpdate = $grid.Rows[$rowIndex].Cells[3].Value
+        $updateStatus = $grid.Rows[$rowIndex].Cells[4].Value
+
+        $applications = $applications | Where-Object { $_.'Application Name' -ne $name }
+
+        $newApp = [PSCustomObject]@{
+            'Application Name' = $name
+            'Last Updated'    = $lastUpdated
+            'Pending Update'    = $pendingUpdate
+            'Requested Update' = $requestedUpdate
+            'Update Status'     = $updateStatus
+        }
+        $applications += $newApp
+
+        $applications | Export-Csv -Path $csvPath -NoTypeInformation
+        Apply-RowColor # Re-apply color coding after editing
+    }
+})
+
+# Adjust column width for the "Application Name" column
+$grid.Columns[0].AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells
+
+# Add controls to the form
+$form.Controls.Add($grid)
+
+# Button to exit
+$btnExit = New-Object System.Windows.Forms.Button
+$btnExit.Text = "Exit"
+$btnExit.Location = New-Object System.Drawing.Point(340, 270)
+$btnExit.Size = New-Object System.Drawing.Size(100, 30)
+$btnExit.Add_Click({
+    $form.Close()
+})
+$form.Controls.Add($btnExit)
+
+# Show form
+$form.ShowDialog()
