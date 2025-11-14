@@ -1,0 +1,448 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Minimize command window
+Add-Type -Name Window -Namespace Console -MemberDefinition '
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+'
+$consolePtr = [Console.Window]::GetConsoleWindow()
+[Console.Window]::ShowWindow($consolePtr, 6) # 6 = Minimize
+
+# --- CONFIGURATION (DEFINE CROSSWALK PATHS) ---
+$crosswalk2025 = "C:\Users\Username\Documents\YourFolder\Crosswalk_2025.csv"
+$crosswalk2026 = "C:\Users\Username\Documents\YourFolder\Crosswalk_2026.csv"
+$selectedYear = $null
+
+# ---YEAR SELECTION ---
+$formYear = New-Object System.Windows.Forms.Form
+$formYear.Text = "Select Year"
+$formYear.Size = New-Object System.Drawing.Size(300,150)
+$formYear.StartPosition = "CenterScreen"
+
+$label = New-Object System.Windows.Forms.Label
+$label.Text = "Select the Year:"
+$label.AutoSize = $true
+$label.Font = New-Object System.Drawing.Font("Segoe UI",12,[System.Drawing.FontStyle]::Bold)
+$label.Location = New-Object System.Drawing.Point(80,20)
+$formYear.Controls.Add($label)
+
+$button2025 = New-Object System.Windows.Forms.Button
+$button2025.Text = "2025"
+$button2025.Size = New-Object System.Drawing.Size(80,30)
+$button2025.Location = New-Object System.Drawing.Point(40,70)
+$button2025.Add_Click({ 
+    $script:selectedYear = "2025"
+    $formYear.Close()
+})
+$formYear.Controls.Add($button2025)
+
+$button2026 = New-Object System.Windows.Forms.Button
+$button2026.Text = "2026"
+$button2026.Size = New-Object System.Drawing.Size(80,30)
+$button2026.Location = New-Object System.Drawing.Point(160,70)
+$button2026.Add_Click({ 
+    $script:selectedYear = "2026"
+    $formYear.Close()
+})
+$formYear.Controls.Add($button2026)
+
+$formYear.ShowDialog() | Out-Null
+
+# --- ASSIGN CROSSWALK PATH BASED ON SELECTION ---
+if ($selectedYear -eq "2025") {
+    $crosswalkPath = $crosswalk2025
+} else {
+    $crosswalkPath = $crosswalk2026
+}
+
+# --- SELECT SOURCE FOLDER WITH INITIAL LOCATION ---
+$folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+$folderBrowser.Description = "Select the Work folder"
+
+###Add starting location for File Browser####
+$folderBrowser.SelectedPath = "C:\Users\Username\Documents\YourFolder"
+
+if ($folderBrowser.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+    Write-Host "No folder selected. Exiting."
+    exit
+}
+
+$sourceFolder = $folderBrowser.SelectedPath
+
+# --- FIND FILES ---
+$clientFile = Get-ChildItem -Path $sourceFolder -Filter *.csv | Where-Object { $_.DirectoryName -eq $sourceFolder } | Select-Object -First 1
+$flysheetFile = Get-ChildItem -Path (Join-Path $sourceFolder "inspire") -Filter "flysheets_(data_file).csv" | Select-Object -First 1
+
+if (-not $clientFile -or -not $flysheetFile) {
+    [System.Windows.Forms.MessageBox]::Show("Missing client or data file. Please check folder structure.")
+    exit
+}
+
+# ----------------------------------------------------------------------
+#                         LOAD FILES INTO ARRAY/HASHTABLES
+# ----------------------------------------------------------------------
+
+# 1. Load client file
+$clientData = Import-Csv $clientFile.FullName | 
+    Select-Object 'Product ID', 'Common Asset Alias'
+
+# 2. Load crosswalk file
+$crosswalkData = Import-Csv $crosswalkPath
+
+# 2a. Create a LOOKUP hash table that handles MULTIPLE rows per Product ID
+$crosswalkLookupTable = @{}
+$duplicateCount = 0
+$skippedCount = 0
+
+$crosswalkData | ForEach-Object {
+    $productIDValue = $_.'Product ID'
+    
+    
+    if ($productIDValue) {
+        $productIDValue = $productIDValue.ToString().Trim()
+    }
+    
+    if ([string]::IsNullOrWhiteSpace($productIDValue)) {
+        $skippedCount++
+        return 
+    }
+    
+    if ($crosswalkLookupTable.ContainsKey($productIDValue)) {
+        if ($crosswalkLookupTable[$productIDValue] -is [array]) {
+            $crosswalkLookupTable[$productIDValue] += $_
+        } else {
+            $crosswalkLookupTable[$productIDValue] = @($crosswalkLookupTable[$productIDValue], $_)
+            $duplicateCount++
+        }
+    } else {
+        $crosswalkLookupTable[$productIDValue] = $_
+    }
+}
+
+# 3. Process and load flysheet file
+$flysheetRaw = Import-Csv $flysheetFile.FullName
+
+# Check which columns exist in the flysheet
+$hasAssetYearProductID = $flysheetRaw[0].PSObject.Properties.Name -contains 'AssetYearProductID'
+$hasProductID = $flysheetRaw[0].PSObject.Properties.Name -contains 'Product ID'
+$hasCoverMaterialID = $flysheetRaw[0].PSObject.Properties.Name -contains 'CoverMaterialID'
+
+$flysheetData = @()
+$flysheetLookupTable = @{}
+$flysheetSkipped = 0
+$flysheetDuplicateCount = 0
+
+foreach ($row in $flysheetRaw) {
+    $year = ""
+    $productID = ""
+    $coverMaterialID = $row.CoverMaterialID
+    if ($hasAssetYearProductID -and $row.'AssetYearProductID') {
+        if ($row.'AssetYearProductID' -match "_") {
+            $split = $row.'AssetYearProductID' -split "_", 2
+            $year = $split[0]
+            $productID = $split[1]
+        } else {
+            $productID = $row.'AssetYearProductID'
+        }
+    } elseif ($hasProductID -and $row.'Product ID') {
+        $productID = $row.'Product ID'
+    } else {
+        $flysheetSkipped++
+        continue
+    }
+    
+    $processedRow = [PSCustomObject]@{
+        Year            = $year
+        'Product ID'    = $productID
+        CoverMaterialID = $coverMaterialID
+    }
+    
+    # Add to the full data array
+    $flysheetData += $processedRow
+    
+    # Add to the lookup table using CoverMaterialID as key (HANDLE DUPLICATES)
+    if ($coverMaterialID -and ![string]::IsNullOrWhiteSpace($coverMaterialID)) {
+        $coverMaterialID = $coverMaterialID.ToString().Trim()
+        
+        if ($flysheetLookupTable.ContainsKey($coverMaterialID)) {
+            if ($flysheetLookupTable[$coverMaterialID] -is [array]) {
+                $flysheetLookupTable[$coverMaterialID] += $processedRow
+            } else {
+                $flysheetLookupTable[$coverMaterialID] = @($flysheetLookupTable[$coverMaterialID], $processedRow)
+                $flysheetDuplicateCount++
+            }
+        } else {
+            $flysheetLookupTable[$coverMaterialID] = $processedRow
+        }
+    }
+}
+
+# ----------------------------------------------------------------------
+#                         QC LOGIC CODE
+# ----------------------------------------------------------------------
+
+$qcResults = @()
+
+# Iterate over the $clientData array (all rows)
+foreach ($clientRecord in $clientData) {
+    $productID = $clientRecord.'Product ID'
+    $clientAlias = $clientRecord.'Common Asset Alias'
+    
+    # Trim whitespace from inputs
+    if ($productID) { $productID = $productID.ToString().Trim() }
+    if ($clientAlias) { $clientAlias = $clientAlias.ToString().Trim() }
+    
+    $uniqueReportID = "$productID`_$clientAlias" 
+    
+    $resultObject = [PSCustomObject]@{
+        'Unique_Report_Key'      = $uniqueReportID 
+        'Product ID'             = $productID
+        'Client_Alias'           = $clientAlias
+        'Crosswalk_AltID'        = $null
+        'Flysheet_CoverID'       = $null
+        'Flysheet_ProductID'     = $null
+        'Match_Status'           = 'FAIL: No matching row in Crosswalk'
+        'CoverID_Match'          = 'N/A'
+        'Flysheet_ProductID_Match' = 'N/A'
+    }
+    
+    # Step 1: Find row in Crosswalk where BOTH Product ID AND Common Asset Alias match
+    $matchingCrosswalkRow = $null
+    
+    
+    if ($productID -and $crosswalkLookupTable.ContainsKey($productID)) {
+        $crosswalkRows = $crosswalkLookupTable[$productID]
+        
+        if ($crosswalkRows -is [array]) {
+            foreach ($cwRecord in $crosswalkRows) {
+                $cwAlias = $cwRecord.'Common Asset Alias'
+                if ($cwAlias) { $cwAlias = $cwAlias.ToString().Trim() }
+                
+                if ($cwAlias -eq $clientAlias) {
+                    $matchingCrosswalkRow = $cwRecord
+                    break
+                }
+            }
+        } else {
+            $cwAlias = $crosswalkRows.'Common Asset Alias'
+            if ($cwAlias) { $cwAlias = $cwAlias.ToString().Trim() }
+            
+            if ($cwAlias -eq $clientAlias) {
+                $matchingCrosswalkRow = $crosswalkRows
+            }
+        }
+    }
+    
+    if ($matchingCrosswalkRow) {
+        $altID = $matchingCrosswalkRow.AltID
+        if ($altID) { $altID = $altID.ToString().Trim() }
+        
+        $resultObject.'Crosswalk_AltID' = $altID
+        $resultObject.'Match_Status' = 'PASS: Found in Crosswalk'
+        
+        # Step 2: Now look up this AltID in the Flysheet
+        if ($altID -and $flysheetLookupTable.ContainsKey($altID)) {
+            $flysheetRows = $flysheetLookupTable[$altID]
+            
+            
+            if ($flysheetRows -is [array]) {
+                $foundMatch = $false
+                foreach ($flysheetRecord in $flysheetRows) {
+                    $flysheetCoverID = $flysheetRecord.CoverMaterialID
+                    $flysheetProductID = $flysheetRecord.'Product ID'
+                    
+                    if ($flysheetCoverID) { $flysheetCoverID = $flysheetCoverID.ToString().Trim() }
+                    if ($flysheetProductID) { $flysheetProductID = $flysheetProductID.ToString().Trim() }
+                    
+                    if ($flysheetProductID -eq $productID) {
+                        $foundMatch = $true
+                        
+                        $resultObject.'Flysheet_CoverID' = $flysheetCoverID
+                        $resultObject.'Flysheet_ProductID' = $flysheetProductID
+                        
+                        # Verify CoverMaterialID matches the AltID
+                        if ($flysheetCoverID -eq $altID) {
+                            $resultObject.'CoverID_Match' = 'PASS'
+                        } else {
+                            $resultObject.'CoverID_Match' = "FAIL: CoverID is '$flysheetCoverID', expected '$altID'"
+                        }
+                        
+                        # Product ID already matches
+                        $resultObject.'Flysheet_ProductID_Match' = 'PASS'
+                        
+                        break
+                    }
+                }
+                
+                if (-not $foundMatch) {
+                    $resultObject.'Flysheet_CoverID' = $flysheetRows[0].CoverMaterialID
+                    $resultObject.'Flysheet_ProductID' = $flysheetRows[0].'Product ID'
+                    $resultObject.'CoverID_Match' = 'PASS'
+                    $resultObject.'Flysheet_ProductID_Match' = "FAIL: Multiple rows with CoverID '$altID', none match Product ID '$productID'"
+                }
+                
+            } else {
+                $flysheetRecord = $flysheetRows
+                $flysheetCoverID = $flysheetRecord.CoverMaterialID
+                $flysheetProductID = $flysheetRecord.'Product ID'
+                
+                if ($flysheetCoverID) { $flysheetCoverID = $flysheetCoverID.ToString().Trim() }
+                if ($flysheetProductID) { $flysheetProductID = $flysheetProductID.ToString().Trim() }
+                
+                $resultObject.'Flysheet_CoverID' = $flysheetCoverID
+                $resultObject.'Flysheet_ProductID' = $flysheetProductID
+                
+                if ($flysheetCoverID -eq $altID) {
+                    $resultObject.'CoverID_Match' = 'PASS'
+                } else {
+                    $resultObject.'CoverID_Match' = "FAIL: CoverID is '$flysheetCoverID', expected '$altID'"
+                }
+                
+                if ($flysheetProductID -eq $productID) {
+                    $resultObject.'Flysheet_ProductID_Match' = 'PASS'
+                } else {
+                    $resultObject.'Flysheet_ProductID_Match' = "FAIL: Flysheet has '$flysheetProductID', expected '$productID'"
+                }
+            }
+            
+        } else {
+            $resultObject.'CoverID_Match' = 'FAIL: AltID not found in Flysheet'
+            $resultObject.'Flysheet_ProductID_Match' = 'N/A: AltID not in Flysheet'
+        }
+    }
+    
+    $qcResults += $resultObject
+}
+
+$failCount = ($qcResults | Where-Object { 
+    $_.'Match_Status' -like 'FAIL*' -or
+    $_.'CoverID_Match' -like 'FAIL*' -or 
+    $_.'Flysheet_ProductID_Match' -like 'FAIL*' 
+}).Count
+
+Write-Host "`n=== QC Check Complete ===" -ForegroundColor Cyan
+Write-Host "Found $failCount potential issues out of $($clientData.Count) records." -ForegroundColor Yellow
+
+# ----------------------------------------------------------------------
+#                         GUI DISPLAY CODE
+# ----------------------------------------------------------------------
+
+function New-DataGridForm {
+    param(
+        [string]$FormTitle,
+        [System.Object[]]$ClientData,
+        [System.Object[]]$CrosswalkData,
+        [System.Object[]]$FlysheetData,
+        [System.Collections.ArrayList]$QCResults
+    )
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = $FormTitle
+    $form.Size = New-Object System.Drawing.Size(1300, 800) 
+    $form.StartPosition = "CenterScreen"
+    $form.MaximizeBox = $true
+    $form.TopMost = $true
+    $form.Add_Shown({$form.Activate()})
+    $tabControl = New-Object System.Windows.Forms.TabControl
+    $tabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $form.Controls.Add($tabControl)
+    
+    function Add-DataTableTab {
+        param(
+            [string]$Name,
+            [object]$Data 
+        )
+        $tab = New-Object System.Windows.Forms.TabPage
+        $tab.Text = $Name
+        $grid = New-Object System.Windows.Forms.DataGridView
+        $grid.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $grid.ReadOnly = $true
+        $grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells
+        $grid.AllowUserToResizeColumns = $true
+        
+        $dataSource = New-Object System.Collections.ArrayList
+        if ($Data -is [hashtable]) {
+            $Data.GetEnumerator() | ForEach-Object {
+                [void]$dataSource.Add($_.Value)
+            }
+        } elseif ($Data -is [System.Object[]]) {
+            $Data | ForEach-Object {
+                [void]$dataSource.Add($_)
+            }
+        } else {
+             $dataSource = $Data
+        }
+        
+        $grid.DataSource = $dataSource
+        
+        # Color failing rows in the QC grid
+        if ($Name -eq "1. QC Check Results") {
+            $grid.Add_DataBindingComplete({
+                param($sender, $e)
+                
+                foreach ($row in $sender.Rows) {
+                    if ($row.IsNewRow) { continue }
+                    
+                    try {
+                        $matchStatus = $null
+                        $coverIDMatch = $null
+                        $productIDMatch = $null
+                        
+                        foreach ($cell in $row.Cells) {
+                            $columnName = $sender.Columns[$cell.ColumnIndex].Name
+                            
+                            if ($columnName -eq "Match_Status") {
+                                $matchStatus = $cell.Value
+                            } elseif ($columnName -eq "CoverID_Match") {
+                                $coverIDMatch = $cell.Value
+                            } elseif ($columnName -eq "Flysheet_ProductID_Match") {
+                                $productIDMatch = $cell.Value
+                            }
+                        }
+                        
+                        # Check if any of the status fields contain "FAIL"
+                        $hasFail = $false
+                        
+                        if ($matchStatus -and $matchStatus.ToString() -like "FAIL*") {
+                            $hasFail = $true
+                        }
+                        if ($coverIDMatch -and $coverIDMatch.ToString() -like "FAIL*") {
+                            $hasFail = $true
+                        }
+                        if ($productIDMatch -and $productIDMatch.ToString() -like "FAIL*") {
+                            $hasFail = $true
+                        }
+                        
+                        if ($hasFail) {
+                            $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightCoral
+                        } else {
+                            # Color passing rows green
+                            if ($matchStatus -eq "PASS: Found in Crosswalk" -and 
+                                $coverIDMatch -eq "PASS" -and 
+                                $productIDMatch -eq "PASS") {
+                                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
+                            }
+                        }
+                        
+                    } catch {
+                       
+                    }
+                }
+            })
+        }
+        
+        $tab.Controls.Add($grid)
+        $tabControl.Controls.Add($tab)
+    }
+    
+    # Create Tabs for each data source
+    Add-DataTableTab -Name "1. QC Check Results" -Data $QCResults 
+    Add-DataTableTab -Name "2. Client Data (All Rows)" -Data $ClientData 
+    Add-DataTableTab -Name "3. Flysheet Data (All Rows)" -Data $FlysheetData
+    Add-DataTableTab -Name "4. Crosswalk Data (All Rows)" -Data $CrosswalkData 
+    
+    [void]$form.ShowDialog()
+}
+
+# --- DISPLAY DATA FOR QC ---
+New-DataGridForm -FormTitle "QC Data Tables ($selectedYear)" -ClientData $clientData -CrosswalkData $crosswalkData -FlysheetData $flysheetData -QCResults $qcResults
